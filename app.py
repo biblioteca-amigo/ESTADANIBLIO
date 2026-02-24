@@ -2560,9 +2560,12 @@ def importar_bd_temp():
                         datos.append(lineas[i])
                         i += 1
                     i += 1  # saltar la línea \.
-                    
-                    datos_str = '\n'.join(datos) + '\n'
-                    cursor.copy_expert(copy_cmd, io.StringIO(datos_str))
+    
+                    # Solo ejecutar si hay datos reales
+                    datos_reales = [d for d in datos if d.strip()]
+                    if datos_reales:
+                        datos_str = '\n'.join(datos) + '\n'
+                        cursor.copy_expert(copy_cmd, io.StringIO(datos_str))
                 
                 else:
                     # Acumular sentencia SQL hasta encontrar ;
