@@ -2505,33 +2505,69 @@ def importar_bd_temp():
             return "No se subió ningún archivo", 400
         
         import psycopg2
+        import io
         db_url = os.environ.get('DATABASE_URL', '')
         if db_url.startswith("postgres://"):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
         
         sql = archivo.read().decode('utf-8')
-        
-        # Filtrar líneas que psycopg2 no puede ejecutar
-        lineas_filtradas = []
-        for linea in sql.splitlines():
-            linea_strip = linea.strip()
-            if linea_strip.startswith('\\'):  # comandos psql como \connect, \set, etc.
-                continue
-            if linea_strip.startswith('--'):  # comentarios
-                continue
-            lineas_filtradas.append(linea)
-        
-        sql_limpio = '\n'.join(lineas_filtradas)
+        lineas = sql.splitlines()
         
         try:
             conn = psycopg2.connect(db_url, sslmode='require')
-            conn.autocommit = True
+            conn.autocommit = False
             cursor = conn.cursor()
-            cursor.execute(sql_limpio)
+            
+            i = 0
+            while i < len(lineas):
+                linea = lineas[i].strip()
+                
+                # Saltar comentarios y comandos psql
+                if not linea or linea.startswith('--') or linea.startswith('\\'):
+                    i += 1
+                    continue
+                
+                # Manejar bloques COPY
+                if linea.startswith('COPY '):
+                    copy_cmd = linea
+                    i += 1
+                    datos = []
+                    while i < len(lineas) and lineas[i].strip() != '\\.':
+                        datos.append(lineas[i])
+                        i += 1
+                    i += 1  # saltar la línea \.
+                    
+                    datos_str = '\n'.join(datos) + '\n'
+                    cursor.copy_expert(copy_cmd, io.StringIO(datos_str))
+                
+                else:
+                    # Acumular sentencia SQL hasta encontrar ;
+                    stmt = []
+                    while i < len(lineas):
+                        stmt_linea = lineas[i]
+                        if stmt_linea.strip().startswith('--') or stmt_linea.strip().startswith('\\'):
+                            i += 1
+                            continue
+                        stmt.append(stmt_linea)
+                        i += 1
+                        if stmt_linea.strip().endswith(';'):
+                            break
+                    
+                    sentencia = '\n'.join(stmt).strip()
+                    if sentencia:
+                        try:
+                            cursor.execute(sentencia)
+                        except Exception as e:
+                            conn.rollback()
+                            return f"<pre>Error en sentencia:\n{sentencia[:200]}\n\n{str(e)}</pre>", 500
+            
+            conn.commit()
             cursor.close()
             conn.close()
             return "<h2>✅ Backup restaurado exitosamente!</h2>"
+        
         except Exception as e:
+            conn.rollback()
             return f"<pre>Error:\n{str(e)}</pre>", 500
     
     return '''
@@ -2540,30 +2576,6 @@ def importar_bd_temp():
             <button type="submit">Restaurar</button>
         </form>
     '''
-
-@app.route('/limpiar-bd-temp')
-def limpiar_bd_temp():
-    if "usuario" not in session:
-        return redirect(url_for("login"))
-    
-    import psycopg2
-    db_url = os.environ.get('DATABASE_URL', '')
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-    
-    try:
-        conn = psycopg2.connect(db_url, sslmode='require')
-        conn.autocommit = True
-        cursor = conn.cursor()
-        cursor.execute("""
-            DROP SCHEMA public CASCADE;
-            CREATE SCHEMA public;
-        """)
-        cursor.close()
-        conn.close()
-        return "<h2>✅ BD limpiada exitosamente!</h2>"
-    except Exception as e:
-        return f"<pre>Error:\n{str(e)}</pre>", 500
 
 
 # ============================================
