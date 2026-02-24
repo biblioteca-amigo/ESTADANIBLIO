@@ -2493,6 +2493,30 @@ def limpiar_datos_route():
         return render_template("panel.html",
                              error=f"Error al limpiar datos: {str(e)}",
                              total_registros=0)
+
+@app.route('/limpiar-bd-temp')
+def limpiar_bd_temp():
+    if "usuario" not in session:
+        return redirect(url_for("login"))
+    
+    import psycopg2
+    db_url = os.environ.get('DATABASE_URL', '')
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+    
+    try:
+        conn = psycopg2.connect(db_url, sslmode='require')
+        conn.autocommit = True
+        cursor = conn.cursor()
+        cursor.execute("""
+            DROP SCHEMA public CASCADE;
+            CREATE SCHEMA public;
+        """)
+        cursor.close()
+        conn.close()
+        return "<h2>✅ BD limpiada exitosamente!</h2>"
+    except Exception as e:
+        return f"<pre>Error:\n{str(e)}</pre>", 500
     
 @app.route('/importar-bd-temp', methods=['GET', 'POST'])
 def importar_bd_temp():
