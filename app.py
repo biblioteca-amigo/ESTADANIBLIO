@@ -2504,25 +2504,23 @@ def importar_bd_temp():
         if not archivo:
             return "No se subió ningún archivo", 400
         
-        import subprocess, tempfile
+        import psycopg2
         db_url = os.environ.get('DATABASE_URL', '')
         if db_url.startswith("postgres://"):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
         
-        with tempfile.NamedTemporaryFile(suffix='.sql', delete=False, mode='wb') as f:
-            archivo.save(f)
-            tmp_path = f.name
+        sql = archivo.read().decode('utf-8')
         
-        result = subprocess.run(
-            ['psql', db_url, '-f', tmp_path],
-            capture_output=True, text=True
-        )
-        os.unlink(tmp_path)
-        
-        if result.returncode != 0:
-            return f"<pre>Error:\n{result.stderr}</pre>", 500
-        
-        return "<h2>✅ Backup restaurado exitosamente!</h2>"
+        try:
+            conn = psycopg2.connect(db_url, sslmode='require')
+            conn.autocommit = True
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            cursor.close()
+            conn.close()
+            return "<h2>✅ Backup restaurado exitosamente!</h2>"
+        except Exception as e:
+            return f"<pre>Error:\n{str(e)}</pre>", 500
     
     return '''
         <form method="post" enctype="multipart/form-data">
