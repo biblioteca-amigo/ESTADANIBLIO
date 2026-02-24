@@ -2511,11 +2511,23 @@ def importar_bd_temp():
         
         sql = archivo.read().decode('utf-8')
         
+        # Filtrar líneas que psycopg2 no puede ejecutar
+        lineas_filtradas = []
+        for linea in sql.splitlines():
+            linea_strip = linea.strip()
+            if linea_strip.startswith('\\'):  # comandos psql como \connect, \set, etc.
+                continue
+            if linea_strip.startswith('--'):  # comentarios
+                continue
+            lineas_filtradas.append(linea)
+        
+        sql_limpio = '\n'.join(lineas_filtradas)
+        
         try:
             conn = psycopg2.connect(db_url, sslmode='require')
             conn.autocommit = True
             cursor = conn.cursor()
-            cursor.execute(sql)
+            cursor.execute(sql_limpio)
             cursor.close()
             conn.close()
             return "<h2>✅ Backup restaurado exitosamente!</h2>"
