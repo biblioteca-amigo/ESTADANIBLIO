@@ -2227,6 +2227,261 @@ def reporte_estadisticas():
         traceback.print_exc()
         return f"Error al generar reporte: {str(e)}", 500
 
+# ============================================
+# RUTA: REPORTE PDF DE EVALUACIONES
+# ============================================
+
+@app.route("/evaluaciones/reporte")
+def reporte_evaluaciones():
+    """Genera un reporte PDF con las evaluaciones de capacitadores."""
+    if "usuario" not in session:
+        return redirect(url_for("login"))
+
+    try:
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib import colors
+        from reportlab.lib.units import mm
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
+                                         TableStyle, HRFlowable)
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    except ImportError:
+        return "Error: reportlab no está instalado. Ejecuta: pip install reportlab", 500
+
+    try:
+        with get_db_connection() as conn:
+            cursor = get_cursor(conn)
+
+            # Stats por capacitador
+            query_stats = adapt_query("""
+                SELECT 
+                    a.dictado_por as capacitador,
+                    COUNT(e.id) as total_evaluaciones,
+                    ROUND(AVG(e.calidad_contenido), 2) as prom_calidad,
+                    ROUND(AVG(e.metodologia), 2) as prom_metodologia,
+                    ROUND(AVG(e.lenguaje_comprensible), 2) as prom_lenguaje,
+                    ROUND(AVG(e.manejo_grupo), 2) as prom_manejo,
+                    ROUND(AVG(e.solucion_inquietudes), 2) as prom_solucion,
+                    ROUND(AVG((e.calidad_contenido + e.metodologia + e.lenguaje_comprensible + 
+                               e.manejo_grupo + e.solucion_inquietudes) / 5.0), 2) as promedio_general
+                FROM evaluaciones_capacitaciones e
+                INNER JOIN asistencias a ON e.asistencia_id = a.id
+                GROUP BY a.dictado_por
+                ORDER BY promedio_general DESC, total_evaluaciones DESC
+            """)
+            cursor.execute(query_stats)
+            stats_capacitadores = cursor.fetchall()
+
+            # Evaluaciones individuales
+            query_eval = adapt_query("""
+                SELECT 
+                    e.calidad_contenido, e.metodologia, e.lenguaje_comprensible,
+                    e.manejo_grupo, e.solucion_inquietudes, e.comentarios,
+                    e.fecha_registro,
+                    a.nombre_evento, a.dictado_por as capacitador,
+                    a.fecha_evento, a.nombre_completo as evaluador,
+                    a.tipo_asistente,
+                    ROUND((e.calidad_contenido + e.metodologia + e.lenguaje_comprensible + 
+                           e.manejo_grupo + e.solucion_inquietudes) / 5.0, 2) as promedio_individual
+                FROM evaluaciones_capacitaciones e
+                INNER JOIN asistencias a ON e.asistencia_id = a.id
+                ORDER BY e.fecha_registro DESC
+            """)
+            cursor.execute(query_eval)
+            evaluaciones = cursor.fetchall()
+
+            # Promedio global
+            query_global = adapt_query("""
+                SELECT COUNT(*) as total,
+                    ROUND(AVG((calidad_contenido + metodologia + lenguaje_comprensible + 
+                               manejo_grupo + solucion_inquietudes) / 5.0), 2) as promedio
+                FROM evaluaciones_capacitaciones
+            """)
+            cursor.execute(query_global)
+            promedio_global = cursor.fetchone()
+
+        # ---- Construir PDF ----
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer, pagesize=landscape(A4),
+            rightMargin=12*mm, leftMargin=12*mm,
+            topMargin=12*mm, bottomMargin=12*mm
+        )
+        page_w = landscape(A4)[0] - 24*mm
+
+        # Colores
+        C_PRIMARY  = colors.HexColor('#00778B')
+        C_INFO     = colors.HexColor('#17a2b8')
+        C_SUCCESS  = colors.HexColor('#28a745')
+        C_WARNING  = colors.HexColor('#ffc107')
+        C_DANGER   = colors.HexColor('#dc3545')
+        C_DARK     = colors.HexColor('#2c3e50')
+        C_GRAY     = colors.HexColor('#6c757d')
+        C_LIGHT    = colors.HexColor('#f8f9fa')
+        C_WHITE    = colors.white
+
+        def style(name, **kwargs):
+            s = ParagraphStyle(name, parent=getSampleStyleSheet()['Normal'], **kwargs)
+            return s
+
+        s_title   = style('T',  fontSize=20, textColor=C_PRIMARY,  fontName='Helvetica-Bold', spaceAfter=2,  alignment=TA_CENTER)
+        s_sub     = style('S',  fontSize=9,  textColor=C_GRAY,     fontName='Helvetica',      spaceAfter=4,  alignment=TA_CENTER)
+        s_section = style('Se', fontSize=12, textColor=C_DARK,     fontName='Helvetica-Bold', spaceBefore=8, spaceAfter=4)
+        s_normal  = style('N',  fontSize=8,  textColor=C_DARK,     fontName='Helvetica')
+        s_small   = style('Sm', fontSize=7,  textColor=C_GRAY,     fontName='Helvetica')
+        s_right   = style('R',  fontSize=8,  textColor=C_GRAY,     fontName='Helvetica',      alignment=TA_RIGHT)
+        s_center  = style('C',  fontSize=8,  textColor=C_DARK,     fontName='Helvetica',      alignment=TA_CENTER)
+
+        def rating_color(val):
+            v = float(val) if val else 0
+            if v >= 4.5: return C_SUCCESS
+            if v >= 4.0: return C_INFO
+            if v >= 3.0: return C_WARNING
+            if v >= 2.0: return colors.HexColor('#fd7e14')
+            return C_DANGER
+
+        story = []
+        fecha_gen = datetime.now().strftime('%d/%m/%Y a las %H:%M')
+
+        # --- Encabezado ---
+        story.append(Paragraph('Evaluaciones de Capacitadores', s_title))
+        story.append(Paragraph('ESTADANIBLIO — Sistema de Estadísticas de Capacitaciones', s_sub))
+        story.append(Paragraph('Biblioteca Universidad Católica Luis Amigó', s_sub))
+        story.append(Paragraph(f'Generado el {fecha_gen}', s_right))
+        story.append(HRFlowable(width='100%', thickness=2, color=C_PRIMARY, spaceAfter=8))
+
+        # --- KPIs globales ---
+        total_eval   = promedio_global['total']   if promedio_global else 0
+        prom_global  = promedio_global['promedio'] if promedio_global else 0
+        total_capac  = len(stats_capacitadores)
+
+        kpi_labels = [
+            Paragraph('<b>TOTAL\nEVALUACIONES</b>', style('kl', fontSize=8, fontName='Helvetica-Bold', textColor=C_WHITE, alignment=TA_CENTER)),
+            Paragraph('<b>PROMEDIO\nGENERAL</b>',   style('kl', fontSize=8, fontName='Helvetica-Bold', textColor=C_WHITE, alignment=TA_CENTER)),
+            Paragraph('<b>CAPACITADORES\nEVALUADOS</b>', style('kl', fontSize=8, fontName='Helvetica-Bold', textColor=C_WHITE, alignment=TA_CENTER)),
+        ]
+        kpi_vals = [
+            Paragraph(f'<b>{total_eval}</b>',  style('kv', fontSize=22, fontName='Helvetica-Bold', textColor=C_PRIMARY, alignment=TA_CENTER)),
+            Paragraph(f'<b>{prom_global}/5</b>', style('kv', fontSize=22, fontName='Helvetica-Bold', textColor=C_SUCCESS, alignment=TA_CENTER)),
+            Paragraph(f'<b>{total_capac}</b>', style('kv', fontSize=22, fontName='Helvetica-Bold', textColor=C_INFO, alignment=TA_CENTER)),
+        ]
+        kpi_w = page_w / 3
+        kpi_table = Table([kpi_labels, kpi_vals], colWidths=[kpi_w]*3, rowHeights=[12*mm, 14*mm])
+        kpi_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (0,0), C_PRIMARY),
+            ('BACKGROUND', (1,0), (1,0), C_SUCCESS),
+            ('BACKGROUND', (2,0), (2,0), C_INFO),
+            ('BACKGROUND', (0,1), (-1,1), C_LIGHT),
+            ('VALIGN',     (0,0), (-1,-1), 'MIDDLE'),
+            ('GRID',       (0,0), (-1,-1), 0.5, colors.HexColor('#dee2e6')),
+            ('PADDING',    (0,0), (-1,-1), 5),
+        ]))
+        story.append(kpi_table)
+        story.append(Spacer(1, 10))
+
+        # --- Tabla: Estadísticas por Capacitador ---
+        story.append(HRFlowable(width='100%', thickness=1, color=C_PRIMARY, spaceAfter=5))
+        story.append(Paragraph('Estadísticas por Capacitador', s_section))
+
+        header_caps = ['Capacitador', 'Total\nEval.', 'Calidad', 'Metodología', 'Lenguaje', 'Manejo\nGrupo', 'Solución\nInq.', 'Promedio\nGeneral']
+        data_caps = [[Paragraph(f'<b>{h}</b>', style('th', fontSize=8, fontName='Helvetica-Bold', textColor=C_WHITE, alignment=TA_CENTER)) for h in header_caps]]
+
+        for stat in stats_capacitadores:
+            prom = float(stat['promedio_general']) if stat['promedio_general'] else 0
+            rc = rating_color(prom)
+            data_caps.append([
+                Paragraph(str(stat['capacitador']), style('nc', fontSize=8, fontName='Helvetica-Bold', textColor=C_DARK)),
+                Paragraph(str(stat['total_evaluaciones']), s_center),
+                Paragraph(str(stat['prom_calidad']),      s_center),
+                Paragraph(str(stat['prom_metodologia']),  s_center),
+                Paragraph(str(stat['prom_lenguaje']),     s_center),
+                Paragraph(str(stat['prom_manejo']),       s_center),
+                Paragraph(str(stat['prom_solucion']),     s_center),
+                Paragraph(f'<b>{stat["promedio_general"]}/5</b>', style('pg', fontSize=9, fontName='Helvetica-Bold', textColor=rc, alignment=TA_CENTER)),
+            ])
+
+        col_w = [page_w*0.28, page_w*0.08, page_w*0.09, page_w*0.10, page_w*0.09, page_w*0.10, page_w*0.10, page_w*0.16]
+        t_caps = Table(data_caps, colWidths=col_w)
+        t_caps.setStyle(TableStyle([
+            ('BACKGROUND',    (0,0), (-1,0), C_PRIMARY),
+            ('ROWBACKGROUNDS',(0,1), (-1,-1), [C_WHITE, C_LIGHT]),
+            ('GRID',          (0,0), (-1,-1), 0.4, colors.HexColor('#dee2e6')),
+            ('VALIGN',        (0,0), (-1,-1), 'MIDDLE'),
+            ('PADDING',       (0,0), (-1,-1), 5),
+        ]))
+        story.append(t_caps)
+        story.append(Spacer(1, 12))
+
+        # --- Tabla: Evaluaciones Individuales ---
+        story.append(HRFlowable(width='100%', thickness=1, color=C_INFO, spaceAfter=5))
+        story.append(Paragraph('Evaluaciones Individuales', s_section))
+
+        header_ev = ['Fecha', 'Capacitador', 'Evento', 'Evaluador', 'Tipo', 'Cal.', 'Met.', 'Leng.', 'Man.', 'Sol.', 'Prom.', 'Comentarios']
+        data_ev = [[Paragraph(f'<b>{h}</b>', style('th2', fontSize=7, fontName='Helvetica-Bold', textColor=C_WHITE, alignment=TA_CENTER)) for h in header_ev]]
+
+        for ev in evaluaciones:
+            # Fecha
+            fr = ev['fecha_registro'] if ev['fecha_registro'] else ''
+            fecha_str = fr[:10] if isinstance(fr, str) else (fr.strftime('%Y-%m-%d') if fr else '-')
+
+            # Comentarios (truncar si son muy largos)
+            comentario = str(ev['comentarios'])[:60] + '…' if ev['comentarios'] and len(str(ev['comentarios'])) > 60 else (ev['comentarios'] or '-')
+
+            prom_i = float(ev['promedio_individual']) if ev['promedio_individual'] else 0
+            rc = rating_color(prom_i)
+
+            data_ev.append([
+                Paragraph(fecha_str, s_small),
+                Paragraph(str(ev['capacitador']), style('cb', fontSize=7, fontName='Helvetica-Bold', textColor=C_DARK)),
+                Paragraph(str(ev['nombre_evento'])[:40], s_small),
+                Paragraph(str(ev['evaluador'])[:25],     s_small),
+                Paragraph(str(ev['tipo_asistente']),     s_small),
+                Paragraph(str(ev['calidad_contenido']),  style('sc', fontSize=7, alignment=TA_CENTER, fontName='Helvetica')),
+                Paragraph(str(ev['metodologia']),        style('sc', fontSize=7, alignment=TA_CENTER, fontName='Helvetica')),
+                Paragraph(str(ev['lenguaje_comprensible']), style('sc', fontSize=7, alignment=TA_CENTER, fontName='Helvetica')),
+                Paragraph(str(ev['manejo_grupo']),       style('sc', fontSize=7, alignment=TA_CENTER, fontName='Helvetica')),
+                Paragraph(str(ev['solucion_inquietudes']), style('sc', fontSize=7, alignment=TA_CENTER, fontName='Helvetica')),
+                Paragraph(f'<b>{ev["promedio_individual"]}</b>', style('pi', fontSize=8, fontName='Helvetica-Bold', textColor=rc, alignment=TA_CENTER)),
+                Paragraph(comentario, s_small),
+            ])
+
+        col_w_ev = [
+            page_w*0.07, page_w*0.12, page_w*0.14, page_w*0.11, page_w*0.07,
+            page_w*0.05, page_w*0.05, page_w*0.05, page_w*0.05, page_w*0.05,
+            page_w*0.06, page_w*0.18
+        ]
+        t_ev = Table(data_ev, colWidths=col_w_ev, repeatRows=1)
+        t_ev.setStyle(TableStyle([
+            ('BACKGROUND',    (0,0), (-1,0), C_INFO),
+            ('ROWBACKGROUNDS',(0,1), (-1,-1), [C_WHITE, C_LIGHT]),
+            ('GRID',          (0,0), (-1,-1), 0.3, colors.HexColor('#dee2e6')),
+            ('VALIGN',        (0,0), (-1,-1), 'MIDDLE'),
+            ('PADDING',       (0,0), (-1,-1), 4),
+        ]))
+        story.append(t_ev)
+
+        # --- Pie de página ---
+        def add_footer(canvas_obj, doc_obj):
+            canvas_obj.saveState()
+            canvas_obj.setFillColor(C_LIGHT)
+            canvas_obj.rect(0, 0, landscape(A4)[0], 10*mm, fill=1, stroke=0)
+            canvas_obj.setFillColor(C_GRAY)
+            canvas_obj.setFont('Helvetica', 7)
+            canvas_obj.drawString(12*mm, 3.5*mm, 'ESTADANIBLIO — Evaluaciones de Capacitadores')
+            canvas_obj.drawRightString(landscape(A4)[0] - 12*mm, 3.5*mm, f'Página {doc_obj.page}')
+            canvas_obj.restoreState()
+
+        doc.build(story, onFirstPage=add_footer, onLaterPages=add_footer)
+        buffer.seek(0)
+
+        nombre_archivo = f"reporte_evaluaciones_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        return send_file(buffer, as_attachment=True, download_name=nombre_archivo, mimetype='application/pdf')
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return f"Error al generar reporte: {str(e)}", 500
+
 
 # Nueva ruta para el formulario de evaluación
 @app.route("/formulario/evaluacion/<int:asistencia_id>", methods=["GET", "POST"])
