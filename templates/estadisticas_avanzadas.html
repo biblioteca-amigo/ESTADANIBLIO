@@ -346,7 +346,28 @@
         }
         /* =================================================== */
 
-
+        /* ========== ESTILOS BOTÓN REPORTE ========== */
+        .btn-report {
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+            border: none;
+            color: white !important;
+            padding: 0.4rem 1rem;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(40,167,69,0.3);
+        }
+        .btn-report:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(40,167,69,0.45);
+            color: white !important;
+        }
+        /* =========================================== */
     </style>
 </head>
 <body>
@@ -358,6 +379,14 @@
                 Estadísticas Avanzadas
             </a>
             <div class="d-flex gap-2 flex-wrap">
+                {% if not mensaje and not error %}
+                <a href="{{ url_for('reporte_estadisticas', evento=filtros.evento, programa=filtros.programa, fecha_inicio=filtros.fecha_inicio, fecha_fin=filtros.fecha_fin) }}"
+                   class="btn-report btn btn-sm"
+                   title="Descargar reporte PDF con los filtros actuales">
+                    <i class="bi bi-file-earmark-pdf-fill"></i>
+                    Reporte PDF
+                </a>
+                {% endif %}
                 <a href="{{ url_for('ver_evaluaciones_capacitadores') }}" class="btn btn-warning btn-nav btn-sm">
                     <i class="bi bi-star-fill me-1"></i>
                     Evaluaciones
