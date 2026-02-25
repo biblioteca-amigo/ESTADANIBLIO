@@ -1906,6 +1906,328 @@ def estadisticas():
                                  'programas_lista': []
                              })
 
+# ============================================
+# RUTA: REPORTE PDF DE ESTADÍSTICAS
+# ============================================
+@app.route("/estadisticas/reporte")
+def reporte_estadisticas():
+    """Genera un reporte PDF de las estadísticas avanzadas con los filtros activos."""
+    if "usuario" not in session:
+        return redirect(url_for("login"))
+
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.units import mm
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
+                                         TableStyle, HRFlowable, KeepTogether)
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    except ImportError:
+        return "Error: reportlab no está instalado. Ejecuta: pip install reportlab", 500
+
+    # --- Leer filtros ---
+    evento_filtro  = request.args.get('evento', '')
+    programa_filtro = request.args.get('programa', '')
+    fecha_inicio   = request.args.get('fecha_inicio', '')
+    fecha_fin      = request.args.get('fecha_fin', '')
+
+    try:
+        # ---- Misma lógica de queries que /estadisticas ----
+        with get_db_connection() as conn:
+            where_clauses = []
+            params = []
+            if evento_filtro:
+                where_clauses.append("nombre_evento = ?")
+                params.append(evento_filtro)
+            if programa_filtro:
+                where_clauses.append("programa_estudiante = ?")
+                params.append(programa_filtro)
+            if fecha_inicio:
+                where_clauses.append("fecha_evento >= ?")
+                params.append(fecha_inicio)
+            if fecha_fin:
+                where_clauses.append("fecha_evento <= ?")
+                params.append(fecha_fin)
+
+            where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+            df_total         = pd.read_sql_query(adapt_query(f"SELECT COUNT(*) as total_asistencias FROM asistencias {where_sql}"), conn, params=params)
+            df_ev_unicos     = pd.read_sql_query(adapt_query(f"SELECT COUNT(DISTINCT nombre_evento) as total_eventos FROM asistencias {where_sql}"), conn, params=params)
+            df_prog_unicos   = pd.read_sql_query(adapt_query(f"SELECT COUNT(DISTINCT programa_estudiante) as total_programas FROM asistencias {where_sql}"), conn, params=params)
+            df_prom_eval     = pd.read_sql_query(adapt_query(f"""
+                SELECT AVG(promedio) as promedio_general
+                FROM evaluaciones_capacitaciones e
+                INNER JOIN asistencias a ON e.asistencia_id = a.id {where_sql}
+            """), conn, params=params)
+
+            df_eventos       = pd.read_sql_query(adapt_query(f"""
+                SELECT nombre_evento, COUNT(*) as total_asistencias
+                FROM asistencias {where_sql}
+                GROUP BY nombre_evento ORDER BY total_asistencias DESC LIMIT 15
+            """), conn, params=params)
+
+            df_programas     = pd.read_sql_query(adapt_query(f"""
+                SELECT programa_estudiante || ' - ' || modalidad as programa_completo, COUNT(*) as total
+                FROM asistencias {where_sql}
+                GROUP BY programa_estudiante, modalidad ORDER BY total DESC LIMIT 15
+            """), conn, params=params)
+
+            df_top = pd.read_sql_query(adapt_query(f"""
+                SELECT * FROM (
+                    SELECT nombre_evento, programa_estudiante, COUNT(*) as total,
+                    ROW_NUMBER() OVER (PARTITION BY nombre_evento ORDER BY COUNT(*) DESC) as ranking
+                    FROM asistencias {where_sql}
+                    GROUP BY nombre_evento, programa_estudiante
+                ) {"AS subquery" if USE_POSTGRES else ""}
+                WHERE ranking <= 5 ORDER BY nombre_evento, ranking
+            """), conn, params=params)
+
+            df_mensual       = pd.read_sql_query(adapt_query(f"""
+                SELECT SUBSTR(fecha_evento, 1, 7) as mes, COUNT(*) as total
+                FROM asistencias
+                WHERE fecha_evento IS NOT NULL AND fecha_evento != ''
+                {(' AND ' + ' AND '.join(where_clauses)) if where_clauses else ''}
+                GROUP BY mes ORDER BY mes
+            """), conn, params=params if where_clauses else [])
+
+            df_modalidad     = pd.read_sql_query(adapt_query(f"""
+                SELECT modalidad, COUNT(*) as total FROM asistencias {where_sql}
+                GROUP BY modalidad ORDER BY total DESC
+            """), conn, params=params)
+
+            df_tipo          = pd.read_sql_query(adapt_query(f"""
+                SELECT tipo_asistente, COUNT(*) as total FROM asistencias {where_sql}
+                GROUP BY tipo_asistente ORDER BY total DESC
+            """), conn, params=params)
+
+        # ---- KPIs ----
+        total_asistencias  = int(df_total['total_asistencias'].iloc[0])   if not df_total.empty   else 0
+        total_eventos_u    = int(df_ev_unicos['total_eventos'].iloc[0])    if not df_ev_unicos.empty else 0
+        total_programas_u  = int(df_prog_unicos['total_programas'].iloc[0]) if not df_prog_unicos.empty else 0
+        prom_eval          = df_prom_eval['promedio_general'].iloc[0]      if not df_prom_eval.empty else None
+        prom_eval_str      = str(round(float(prom_eval), 2)) if prom_eval and not pd.isna(prom_eval) else 'N/A'
+
+        # ---- Construir PDF ----
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer, pagesize=A4,
+            rightMargin=15*mm, leftMargin=15*mm,
+            topMargin=15*mm, bottomMargin=15*mm
+        )
+        page_w = A4[0] - 30*mm
+
+        # Colores
+        C_PRIMARY  = colors.HexColor('#667eea')
+        C_DARK     = colors.HexColor('#2c3e50')
+        C_GRAY     = colors.HexColor('#6c757d')
+        C_LIGHT    = colors.HexColor('#f8f9ff')
+        C_SUCCESS  = colors.HexColor('#28a745')
+        C_WARNING  = colors.HexColor('#ffc107')
+        C_DANGER   = colors.HexColor('#dc3545')
+        C_WHITE    = colors.white
+
+        styles = getSampleStyleSheet()
+
+        def style(name, **kwargs):
+            s = ParagraphStyle(name, parent=styles['Normal'], **kwargs)
+            return s
+
+        s_title    = style('Title2',    fontSize=22, textColor=C_PRIMARY,   fontName='Helvetica-Bold', spaceAfter=2, alignment=TA_CENTER)
+        s_subtitle = style('Subtitle2', fontSize=10, textColor=C_GRAY,      fontName='Helvetica',      spaceAfter=6, alignment=TA_CENTER)
+        s_section  = style('Section',   fontSize=13, textColor=C_DARK,      fontName='Helvetica-Bold', spaceBefore=10, spaceAfter=4)
+        s_normal   = style('Normal2',   fontSize=9,  textColor=C_DARK,      fontName='Helvetica')
+        s_small    = style('Small2',    fontSize=8,  textColor=C_GRAY,      fontName='Helvetica')
+        s_center   = style('Center2',   fontSize=9,  textColor=C_DARK,      fontName='Helvetica',      alignment=TA_CENTER)
+        s_bold     = style('Bold2',     fontSize=9,  textColor=C_DARK,      fontName='Helvetica-Bold')
+        s_right    = style('Right2',    fontSize=8,  textColor=C_GRAY,      fontName='Helvetica',      alignment=TA_RIGHT)
+
+        story = []
+        fecha_gen = datetime.now().strftime('%d/%m/%Y a las %H:%M')
+
+        # --- Encabezado ---
+        story.append(Paragraph('Dashboard de Estadísticas', s_title))
+        story.append(Paragraph('ESTADANIBLIO — Sistema de Estadísticas de Capacitaciones', s_subtitle))
+        story.append(Paragraph('Biblioteca Universidad Católica Luis Amigó', s_subtitle))
+        story.append(Paragraph(f'Generado el {fecha_gen}', s_right))
+        story.append(HRFlowable(width='100%', thickness=2, color=C_PRIMARY, spaceAfter=8))
+
+        # --- Filtros aplicados ---
+        story.append(Paragraph('Filtros Aplicados', s_section))
+        filtros_data = [
+            ['Evento', evento_filtro or 'Todos',
+             'Programa', programa_filtro or 'Todos'],
+            ['Fecha inicio', fecha_inicio or '—',
+             'Fecha fin', fecha_fin or '—'],
+        ]
+        filtros_table = Table(filtros_data, colWidths=[page_w*0.18, page_w*0.32, page_w*0.18, page_w*0.32])
+        filtros_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), C_LIGHT),
+            ('BACKGROUND', (0,0), (0,-1), C_PRIMARY),
+            ('BACKGROUND', (2,0), (2,-1), C_PRIMARY),
+            ('TEXTCOLOR',  (0,0), (0,-1), C_WHITE),
+            ('TEXTCOLOR',  (2,0), (2,-1), C_WHITE),
+            ('FONTNAME',   (0,0), (-1,-1), 'Helvetica'),
+            ('FONTNAME',   (0,0), (0,-1), 'Helvetica-Bold'),
+            ('FONTNAME',   (2,0), (2,-1), 'Helvetica-Bold'),
+            ('FONTSIZE',   (0,0), (-1,-1), 9),
+            ('ROWBACKGROUNDS', (0,0), (-1,-1), [C_LIGHT, colors.HexColor('#eef0fb')]),
+            ('GRID',       (0,0), (-1,-1), 0.5, colors.HexColor('#dee2e6')),
+            ('ROUNDEDCORNERS', [4]),
+            ('PADDING',    (0,0), (-1,-1), 6),
+        ]))
+        story.append(filtros_table)
+        story.append(Spacer(1, 8))
+
+        # --- KPIs ---
+        story.append(HRFlowable(width='100%', thickness=1, color=C_PRIMARY, spaceAfter=6))
+        story.append(Paragraph('Resumen General', s_section))
+
+        kpi_colors = [C_PRIMARY, C_SUCCESS, C_WARNING, C_DANGER]
+        kpi_data   = [
+            [Paragraph('<b>TOTAL<br/>ASISTENCIAS</b>', style('k', fontSize=8, fontName='Helvetica-Bold', textColor=C_WHITE, alignment=TA_CENTER)),
+             Paragraph('<b>EVENTOS<br/>REALIZADOS</b>',  style('k', fontSize=8, fontName='Helvetica-Bold', textColor=C_WHITE, alignment=TA_CENTER)),
+             Paragraph('<b>PROGRAMAS<br/>PARTICIPANTES</b>', style('k', fontSize=8, fontName='Helvetica-Bold', textColor=C_WHITE, alignment=TA_CENTER)),
+             Paragraph('<b>PROMEDIO<br/>EVALUACIONES</b>', style('k', fontSize=8, fontName='Helvetica-Bold', textColor=C_WHITE, alignment=TA_CENTER))],
+            [Paragraph(f'<b>{total_asistencias}</b>', style('v', fontSize=22, fontName='Helvetica-Bold', textColor=C_PRIMARY, alignment=TA_CENTER)),
+             Paragraph(f'<b>{total_eventos_u}</b>',  style('v', fontSize=22, fontName='Helvetica-Bold', textColor=C_SUCCESS, alignment=TA_CENTER)),
+             Paragraph(f'<b>{total_programas_u}</b>', style('v', fontSize=22, fontName='Helvetica-Bold', textColor=C_WARNING, alignment=TA_CENTER)),
+             Paragraph(f'<b>{prom_eval_str}</b>',    style('v', fontSize=22, fontName='Helvetica-Bold', textColor=C_DANGER,  alignment=TA_CENTER))],
+        ]
+        kpi_table = Table(kpi_data, colWidths=[page_w/4]*4, rowHeights=[14*mm, 16*mm])
+        kpi_style = [
+            ('BACKGROUND', (0,0), (0,0), C_PRIMARY),
+            ('BACKGROUND', (1,0), (1,0), C_SUCCESS),
+            ('BACKGROUND', (2,0), (2,0), C_WARNING),
+            ('BACKGROUND', (3,0), (3,0), C_DANGER),
+            ('BACKGROUND', (0,1), (-1,1), C_LIGHT),
+            ('VALIGN',     (0,0), (-1,-1), 'MIDDLE'),
+            ('GRID',       (0,0), (-1,-1), 0.5, colors.HexColor('#dee2e6')),
+            ('LEFTPADDING',  (0,0), (-1,-1), 4),
+            ('RIGHTPADDING', (0,0), (-1,-1), 4),
+        ]
+        kpi_table.setStyle(TableStyle(kpi_style))
+        story.append(kpi_table)
+        story.append(Spacer(1, 10))
+
+        # --- Función helper para tablas de datos ---
+        def make_data_table(df, col_names, col_widths, header_bg=C_PRIMARY):
+            data = [[Paragraph(f'<b>{c}</b>', style('th', fontSize=9, fontName='Helvetica-Bold', textColor=C_WHITE, alignment=TA_CENTER))
+                     for c in col_names]]
+            for _, row in df.iterrows():
+                data.append([Paragraph(str(v), s_normal) for v in row.values])
+            t = Table(data, colWidths=col_widths)
+            t.setStyle(TableStyle([
+                ('BACKGROUND',    (0,0), (-1,0),  header_bg),
+                ('ROWBACKGROUNDS',(0,1), (-1,-1), [C_WHITE, C_LIGHT]),
+                ('GRID',          (0,0), (-1,-1), 0.4, colors.HexColor('#dee2e6')),
+                ('VALIGN',        (0,0), (-1,-1), 'MIDDLE'),
+                ('PADDING',       (0,0), (-1,-1), 5),
+                ('FONTNAME',      (0,1), (-1,-1), 'Helvetica'),
+                ('FONTSIZE',      (0,1), (-1,-1), 9),
+            ]))
+            return t
+
+        # --- Asistencias por Evento ---
+        if not df_eventos.empty:
+            story.append(HRFlowable(width='100%', thickness=1, color=C_PRIMARY, spaceAfter=6))
+            story.append(Paragraph('Asistencias por Evento', s_section))
+            story.append(make_data_table(
+                df_eventos,
+                ['Nombre del Evento', 'Total Asistentes'],
+                [page_w * 0.72, page_w * 0.28]
+            ))
+            story.append(Spacer(1, 8))
+
+        # --- Asistencias por Programa ---
+        if not df_programas.empty:
+            story.append(HRFlowable(width='100%', thickness=1, color=C_SUCCESS, spaceAfter=6))
+            story.append(Paragraph('Asistencias por Programa', s_section))
+            story.append(make_data_table(
+                df_programas,
+                ['Programa - Modalidad', 'Total'],
+                [page_w * 0.72, page_w * 0.28],
+                header_bg=C_SUCCESS
+            ))
+            story.append(Spacer(1, 8))
+
+        # --- Top 5 por evento ---
+        if not df_top.empty:
+            story.append(HRFlowable(width='100%', thickness=1, color=C_WARNING, spaceAfter=6))
+            story.append(Paragraph('Top 5 Programas por Evento', s_section))
+            for evento_n in df_top['nombre_evento'].unique():
+                sub = df_top[df_top['nombre_evento'] == evento_n][['ranking','programa_estudiante','total']]
+                story.append(Paragraph(f'<b>{evento_n}</b>', style('evn', fontSize=10, fontName='Helvetica-Bold', textColor=C_DARK, spaceBefore=6, spaceAfter=3)))
+                story.append(make_data_table(
+                    sub,
+                    ['#', 'Programa', 'Asistentes'],
+                    [page_w*0.08, page_w*0.72, page_w*0.20],
+                    header_bg=C_WARNING
+                ))
+            story.append(Spacer(1, 8))
+
+        # --- Tendencia mensual ---
+        if not df_mensual.empty:
+            story.append(HRFlowable(width='100%', thickness=1, color=C_PRIMARY, spaceAfter=6))
+            story.append(Paragraph('Tendencia Mensual de Asistencias', s_section))
+            story.append(make_data_table(
+                df_mensual,
+                ['Mes', 'Total Asistencias'],
+                [page_w * 0.5, page_w * 0.5]
+            ))
+            story.append(Spacer(1, 8))
+
+        # --- Distribución por Modalidad ---
+        if not df_modalidad.empty:
+            story.append(HRFlowable(width='100%', thickness=1, color=C_DANGER, spaceAfter=6))
+            story.append(Paragraph('Distribución por Modalidad', s_section))
+            story.append(make_data_table(
+                df_modalidad,
+                ['Modalidad', 'Total'],
+                [page_w * 0.72, page_w * 0.28],
+                header_bg=C_DANGER
+            ))
+            story.append(Spacer(1, 8))
+
+        # --- Tipo de Asistente ---
+        if not df_tipo.empty:
+            story.append(HRFlowable(width='100%', thickness=1, color=C_GRAY, spaceAfter=6))
+            story.append(Paragraph('Tipo de Asistente', s_section))
+            story.append(make_data_table(
+                df_tipo,
+                ['Tipo de Asistente', 'Total'],
+                [page_w * 0.72, page_w * 0.28],
+                header_bg=C_GRAY
+            ))
+
+        # --- Pie de página con función ---
+        def add_footer(canvas_obj, doc_obj):
+            canvas_obj.saveState()
+            canvas_obj.setFillColor(C_LIGHT)
+            canvas_obj.rect(0, 0, A4[0], 12*mm, fill=1, stroke=0)
+            canvas_obj.setFillColor(C_GRAY)
+            canvas_obj.setFont('Helvetica', 8)
+            canvas_obj.drawString(15*mm, 4*mm, 'ESTADANIBLIO — Sistema de Estadísticas de Capacitaciones')
+            canvas_obj.drawRightString(A4[0] - 15*mm, 4*mm, f'Página {doc_obj.page}')
+            canvas_obj.restoreState()
+
+        doc.build(story, onFirstPage=add_footer, onLaterPages=add_footer)
+        buffer.seek(0)
+
+        nombre_archivo = f"reporte_estadisticas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name=nombre_archivo,
+            mimetype='application/pdf'
+        )
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return f"Error al generar reporte: {str(e)}", 500
+
+
 # Nueva ruta para el formulario de evaluación
 @app.route("/formulario/evaluacion/<int:asistencia_id>", methods=["GET", "POST"])
 def formulario_evaluacion(asistencia_id):
