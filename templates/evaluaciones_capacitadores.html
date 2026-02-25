@@ -278,6 +278,29 @@
             border-width: 0.3rem;
             color: var(--primary-color);
         }
+
+        /* ===== BOTÓN REPORTE ===== */
+        .btn-report {
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+            border: none;
+            color: white !important;
+            padding: 0.4rem 1rem;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(40,167,69,0.3);
+        }
+        .btn-report:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(40,167,69,0.45);
+            color: white !important;
+        }
+        /* ========================= */
     </style>
 </head>
 <body>
@@ -293,6 +316,12 @@
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav ms-auto">
+                    <li class="nav-item me-2">
+                        <a href="{{ url_for('reporte_evaluaciones') }}" class="btn-report" title="Descargar reporte PDF de evaluaciones">
+                            <i class="bi bi-file-earmark-pdf-fill"></i>
+                            Reporte PDF
+                        </a>
+                    </li>
                     <li class="nav-item">
                         <a class="nav-link" href="{{ url_for('panel') }}">
                             <i class="bi bi-house-door me-1"></i>Panel
