@@ -24,3 +24,6 @@ pytz==2023.3
 
 # Driver de PostgreSQL
 psycopg2-binary==2.9.9
+
+#Reporte de estadísticas
+reportlab==4.2.5
