@@ -1436,7 +1436,7 @@ def exportar():
 
         return send_file(output,
                          as_attachment=True,
-                         download_name="asistencias_filtradas.xlsx",
+                         download_name="Listado de Asistencia.xlsx",
                          mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     except Exception as e:
