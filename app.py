@@ -1188,6 +1188,33 @@ def api_put_asistencia(asistencia_id):
         traceback.print_exc()
         return {"success": False, "error": str(e)}, 500
 
+
+@app.route("/api/asistencia/<int:asistencia_id>", methods=["DELETE"])
+def api_delete_asistencia(asistencia_id):
+    """Elimina un registro de asistencia por su ID."""
+    if "usuario" not in session:
+        return {"success": False, "error": "No autorizado"}, 401
+
+    try:
+        with get_db_connection() as conn:
+            cursor = get_cursor(conn)
+
+            # Verificar que el registro existe antes de eliminar
+            cursor.execute(adapt_query("SELECT id FROM asistencias WHERE id = ?"), (asistencia_id,))
+            if not cursor.fetchone():
+                return {"success": False, "error": "Registro no encontrado"}, 404
+
+            cursor.execute(adapt_query("DELETE FROM asistencias WHERE id = ?"), (asistencia_id,))
+            conn.commit()
+
+        return {"success": True, "message": "Registro eliminado correctamente"}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}, 500
+
+
 @app.route("/api/stats/asistencias")
 def api_stats_asistencias():
     """Devuelve conteos únicos de eventos, programas y sedes para las tarjetas del panel."""
