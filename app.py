@@ -2,7 +2,6 @@ from flask import Flask, flash, render_template, request, redirect, url_for, ses
 import pandas as pd
 import io
 import qrcode
-import matplotlib.pyplot as plt
 import os
 import time
 from werkzeug.security import generate_password_hash, check_password_hash
