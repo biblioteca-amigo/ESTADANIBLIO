@@ -15,9 +15,6 @@ openpyxl==3.1.2
 qrcode==7.4.2
 Pillow==10.1.0
 
-# Visualización y gráficos
-matplotlib==3.8.2
-
 # Utilidades adicionales
 python-dateutil==2.8.2
 pytz==2023.3
