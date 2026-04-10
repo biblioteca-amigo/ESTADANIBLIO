@@ -3065,6 +3065,7 @@ def ver_evaluaciones_capacitadores():
                 FROM evaluaciones_capacitaciones e
                 INNER JOIN asistencias a ON e.asistencia_id = a.id
                 ORDER BY e.fecha_registro DESC
+                LIMIT 350
             """)
             cursor.execute(query_evaluaciones)
             evaluaciones = cursor.fetchall()
