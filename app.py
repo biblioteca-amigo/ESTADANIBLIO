@@ -4,6 +4,7 @@ import io
 import qrcode
 import matplotlib.pyplot as plt
 import os
+import time
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 import unicodedata
@@ -29,17 +30,36 @@ app.secret_key = os.environ.get('SECRET_KEY', 'clave_secreta_por_defecto')
 mensaje_limpieza_global = None
 
 # --- Funciones auxiliares para base de datos dual ---
-def get_db_connection():
-    """Función auxiliar para obtener conexión a la base de datos (SQLite o PostgreSQL)"""
+def get_db_connection(max_intentos=5, espera_segundos=5):
+    """
+    Función auxiliar para obtener conexión a la base de datos (SQLite o PostgreSQL).
+    En PostgreSQL, reintenta la conexión hasta max_intentos veces ante fallos de red,
+    lo que previene el error 'Bad Gateway' cuando Render tarda en resolver el DNS
+    de la base de datos durante el arranque del servicio.
+    """
     if USE_POSTGRES:
-        # PostgreSQL en producción
         # IMPORTANTE: Render puede dar URL con postgres:// que debe ser postgresql://
         db_url = DATABASE_URL
         if db_url.startswith("postgres://"):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
-        
-        conn = psycopg2.connect(db_url, sslmode='require')
-        return conn
+
+        ultimo_error = None
+        for intento in range(1, max_intentos + 1):
+            try:
+                conn = psycopg2.connect(db_url, sslmode='require')
+                if intento > 1:
+                    print(f"[DB] Conexión exitosa en el intento {intento}.")
+                return conn
+            except psycopg2.OperationalError as e:
+                ultimo_error = e
+                if intento < max_intentos:
+                    print(f"[DB] Intento {intento}/{max_intentos} fallido: {e}. "
+                          f"Reintentando en {espera_segundos}s...")
+                    time.sleep(espera_segundos)
+                else:
+                    print(f"[DB] Todos los intentos fallaron. Último error: {e}")
+
+        raise ultimo_error
     else:
         # SQLite en desarrollo
         conn = sqlite3.connect("biblioteca.db")
@@ -3203,14 +3223,20 @@ def init_db_route():
 # ============================================
 
 # CRÍTICO: Inicializar DB SIEMPRE (incluso con gunicorn)
-# Esto se ejecuta al importar el módulo, antes de que gunicorn inicie
+# Esto se ejecuta al importar el módulo, antes de que gunicorn inicie.
+# get_db_connection() ya incluye reintentos automáticos ante fallos de DNS/red,
+# por lo que este bloque es resiliente a arranques lentos de la base de datos en Render.
 try:
     mensaje_limpieza_duplicados = init_db()
     if mensaje_limpieza_duplicados:
         mensaje_limpieza_global = mensaje_limpieza_duplicados
+    print("[DB] Base de datos inicializada correctamente.")
 except Exception as e:
     import traceback
+    print("[DB] ERROR CRÍTICO: No se pudo inicializar la base de datos tras varios intentos.")
     traceback.print_exc()
+    # No relanzamos la excepción para que gunicorn pueda arrancar igualmente.
+    # Las rutas que necesiten DB mostrarán el error en tiempo de ejecución.
 
 
 if __name__ == "__main__":
